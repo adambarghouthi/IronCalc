@@ -1,7 +1,14 @@
 #[cfg(feature = "use_regex_lite")]
 use regex_lite as regex;
 
-use crate::{calc_result::CalcResult, expressions::token::is_english_error_string};
+use crate::{
+    calc_result::CalcResult, 
+    expressions::{
+        parser::ArrayNode,
+        token::is_english_error_string,
+        types::CellReferenceIndex,
+    }
+};
 
 /// This test for exact match (modulo case).
 ///   * strings are not cast into bools or numbers
@@ -397,4 +404,61 @@ pub(crate) fn build_criteria<'a>(value: &'a CalcResult) -> Box<dyn Fn(&CalcResul
         CalcResult::Array(_) => Box::new(move |_x| false),
         CalcResult::EmptyCell | CalcResult::EmptyArg => Box::new(result_is_equal_to_empty),
     }
+}
+
+/// Process array elements with a custom processor function.
+/// This helper eliminates code duplication across mathematical and statistical functions.
+/// 
+/// # Arguments
+/// * `array` - The 2D array of ArrayNode values to process
+/// * `cell` - Cell reference for error reporting
+/// * `processor` - Closure that processes each non-error element
+/// 
+/// # Returns
+/// * `Ok(())` if processing succeeded
+/// * `Err(CalcResult)` if an error was encountered in the array
+/// 
+/// # Example
+/// ```rust
+/// // For mathematical functions (numbers only)
+/// process_array(array, cell, |node| {
+///     if let ArrayNode::Number(value) = node {
+///         sum += value;
+///     }
+/// })?;
+/// 
+/// // For counting functions (all elements)
+/// process_array(array, cell, |node| {
+///     match node {
+///         ArrayNode::Number(_) | ArrayNode::String(_) | ArrayNode::Boolean(_) => {
+///             count += 1.0;
+///         }
+///         _ => {}
+///     }
+/// })?;
+/// ```
+pub(crate) fn process_array<F>(
+    array: Vec<Vec<ArrayNode>>, 
+    cell: CellReferenceIndex, 
+    mut processor: F
+) -> Result<(), CalcResult>
+where F: FnMut(&ArrayNode)
+{
+    for row in array {
+        for value in row {
+            match value {
+                ArrayNode::Error(error) => {
+                    return Err(CalcResult::Error {
+                        error,
+                        origin: cell,
+                        message: "Error in array".to_string(),
+                    });
+                }
+                _ => {
+                    processor(&value);
+                }
+            }
+        }
+    }
+    Ok(())
 }
