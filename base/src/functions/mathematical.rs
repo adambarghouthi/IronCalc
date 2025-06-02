@@ -8,6 +8,8 @@ use crate::{
 };
 use std::f64::consts::PI;
 
+use super::util::process_array;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn random() -> f64 {
     rand::random()
@@ -51,6 +53,15 @@ impl Model {
                         }
                     }
                 }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            result = value.min(result);
+                        }
+                    }) {
+                        return error;
+                    }
+                }
                 error @ CalcResult::Error { .. } => return error,
                 _ => {
                     // We ignore booleans and strings
@@ -92,6 +103,15 @@ impl Model {
                                 }
                             }
                         }
+                    }
+                }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            result = value.max(result);
+                        }
+                    }) {
+                        return error;
                     }
                 }
                 error @ CalcResult::Error { .. } => return error,
@@ -173,24 +193,12 @@ impl Model {
                     }
                 }
                 CalcResult::Array(array) => {
-                    for row in array {
-                        for value in row {
-                            match value {
-                                ArrayNode::Number(value) => {
-                                    result += value;
-                                }
-                                ArrayNode::Error(error) => {
-                                    return CalcResult::Error {
-                                        error,
-                                        origin: cell,
-                                        message: "Error in array".to_string(),
-                                    }
-                                }
-                                _ => {
-                                    // We ignore booleans and strings
-                                }
-                            }
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            result += value;
                         }
+                    }) {
+                        return error;
                     }
                 }
                 error @ CalcResult::Error { .. } => return error,
@@ -267,6 +275,16 @@ impl Model {
                                 }
                             }
                         }
+                    }
+                }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            seen_value = true;
+                            result *= value;
+                        }
+                    }) {
+                        return error;
                     }
                 }
                 error @ CalcResult::Error { .. } => return error,

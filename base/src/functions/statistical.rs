@@ -1,4 +1,5 @@
 use crate::constants::{LAST_COLUMN, LAST_ROW};
+use crate::expressions::parser::ArrayNode;
 use crate::expressions::types::CellReferenceIndex;
 use crate::{
     calc_result::{CalcResult, Range},
@@ -7,7 +8,7 @@ use crate::{
     model::Model,
 };
 
-use super::util::build_criteria;
+use super::util::{build_criteria, process_array};
 
 impl Model {
     pub(crate) fn fn_average(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -74,6 +75,16 @@ impl Model {
                             origin: cell,
                             message: "Argument cannot be cast into number".to_string(),
                         };
+                    }
+                }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            count += 1.0;
+                            sum += value;
+                        }
+                    }) {
+                        return error;
                     }
                 }
                 _ => {
@@ -231,6 +242,15 @@ impl Model {
                         }
                     }
                 }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(_) = node {
+                            result += 1.0;  // COUNT only counts numbers
+                        }
+                    }) {
+                        return error;
+                    }
+                }
                 _ => {
                     // Ignore everything else
                 }
@@ -268,6 +288,18 @@ impl Model {
                                 }
                             }
                         }
+                    }
+                }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        match node {
+                            ArrayNode::Number(_) | ArrayNode::String(_) | ArrayNode::Boolean(_) => {
+                                result += 1.0;
+                            }
+                            _ => {}
+                        }
+                    }) {
+                        return error;
                     }
                 }
                 _ => {
