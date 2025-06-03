@@ -181,15 +181,32 @@ impl Model {
                         sum += 1.0;
                     }
                 }
-                error @ CalcResult::Error { .. } => return error,
-                CalcResult::EmptyCell | CalcResult::EmptyArg => {}
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        match node {
+                            ArrayNode::Number(value) => {
+                                count += 1.0;
+                                sum += value;
+                            }
+                            ArrayNode::String(_) => {
+                                count += 1.0;
+                                // Text counts as 0 (no addition to sum)
+                            }
+                            ArrayNode::Boolean(b) => {
+                                count += 1.0;
+                                if *b {
+                                    sum += 1.0;
+                                }
+                                // FALSE adds 0 (no addition to sum)
+                            }
+                            _ => {}
+                        }
+                    }) {
+                        return error;
                     }
                 }
+                error @ CalcResult::Error { .. } => return error,
+                CalcResult::EmptyCell | CalcResult::EmptyArg => {}
             };
         }
         if count == 0.0 {
@@ -322,6 +339,21 @@ impl Model {
                 CalcResult::String(s) => {
                     if s.is_empty() {
                         result += 1.0
+                    }
+                }
+                CalcResult::Array(array) => {
+                    match process_array(array, cell, |node| match node {
+                        ArrayNode::String(s) => {
+                            if s.is_empty() {
+                                result += 1.0;
+                            }
+                        }
+                        _ => {
+                            // Numbers, booleans, etc. are not counted as blank
+                        }
+                    }) {
+                        Ok(()) => {},
+                        Err(error) => return error,
                     }
                 }
                 CalcResult::Range { left, right } => {
