@@ -20,8 +20,10 @@ fn basic_array_support() {
     let test_cases = vec![
         ("=SUM({1,2,3})", "SUM"),
         ("=AVERAGE({1,2,3})", "AVERAGE"),
+        ("=AVERAGEA({1,2,3})", "AVERAGEA"),
         ("=COUNT({1,2,3})", "COUNT"),
         ("=COUNTA({1,2,3})", "COUNTA"),
+        ("=COUNTBLANK({1,2,3})", "COUNTBLANK"),
         ("=MAX({1,2,3})", "MAX"),
         ("=MIN({1,2,3})", "MIN"),
         ("=PRODUCT({1,2,3})", "PRODUCT"),
@@ -73,12 +75,15 @@ fn mixed_data_types() {
     model._set("A2", "=COUNTA({1,\"text\",TRUE,2})");
     // SUM should ignore non-numbers
     model._set("A3", "=SUM({1,\"text\",TRUE,2})");
+    // AVERAGEA should include all types (text=0, TRUE=1, FALSE=0)
+    model._set("A4", "=AVERAGEA({1,\"text\",TRUE,2})");
     
     model.evaluate();
     
     assert_eq!(model._get_text("A1"), "2", "COUNT should only count numbers in mixed array");
     assert_eq!(model._get_text("A2"), "4", "COUNTA should count all elements in mixed array");
     assert_eq!(model._get_text("A3"), "3", "SUM should ignore non-numbers in mixed array");
+    assert_eq!(model._get_text("A4"), "1", "AVERAGEA should include all: (1+0+1+2)/4=1");
 }
 
 #[test]
@@ -116,6 +121,8 @@ fn mathematical_functions_with_mixed_arrays() {
     model._set("A2", "=MAX({5,\"text\",1,TRUE,3})");
     model._set("A3", "=AVERAGE({5,\"text\",1,TRUE,3})");
     model._set("A4", "=PRODUCT({5,\"text\",2,TRUE})");
+    // AVERAGEA includes all types, unlike AVERAGE
+    model._set("A5", "=AVERAGEA({5,\"text\",1,TRUE,3})");
     
     model.evaluate();
     
@@ -123,6 +130,7 @@ fn mathematical_functions_with_mixed_arrays() {
     assert_eq!(model._get_text("A2"), "5", "MAX should ignore non-numbers");
     assert_eq!(model._get_text("A3"), "3", "AVERAGE should ignore non-numbers (5+1+3)/3=3");
     assert_eq!(model._get_text("A4"), "10", "PRODUCT should ignore non-numbers");
+    assert_eq!(model._get_text("A5"), "2", "AVERAGEA should include all: (5+0+1+1+3)/5=2");
 }
 
 #[test]
@@ -144,4 +152,24 @@ fn average_array_comparison() {
     // Both should return 2
     assert_eq!(result1, "2", "AVERAGE with array should work");
     assert_eq!(result2, "2", "AVERAGE with individual args should work");
+}
+
+#[test]
+fn countblank_array_behavior() {
+    let mut model = new_empty_model();
+    
+    // COUNTBLANK should only count empty strings in arrays
+    model._set("A1", "=COUNTBLANK({1,\"\",3})");  // Should be 1 (one empty string)
+    model._set("A2", "=COUNTBLANK({\"\",\"\",\"text\"})");  // Should be 2 (two empty strings)
+    model._set("A3", "=COUNTBLANK({1,2,3})");  // Should be 0 (no empty strings)
+    model._set("A4", "=COUNTBLANK({TRUE,FALSE,\"\"})");  // Should be 1 (one empty string)
+    model._set("A5", "=COUNTBLANK({\"\",\"\",\"\"})");  // Should be 3 (all empty strings)
+    
+    model.evaluate();
+    
+    assert_eq!(model._get_text("A1"), "1", "COUNTBLANK should count only empty strings");
+    assert_eq!(model._get_text("A2"), "2", "COUNTBLANK should count multiple empty strings");
+    assert_eq!(model._get_text("A3"), "0", "COUNTBLANK should not count numbers");
+    assert_eq!(model._get_text("A4"), "1", "COUNTBLANK should not count booleans, only empty strings");
+    assert_eq!(model._get_text("A5"), "3", "COUNTBLANK should count all empty strings");
 }
