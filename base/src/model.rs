@@ -22,7 +22,7 @@ use crate::{
         format::{format_number, parse_formatted_number},
         lexer::is_likely_date_number_format,
     },
-    functions::util::compare_values,
+    functions::util::{array_node_to_calc_result, compare_values},
     implicit_intersection::implicit_intersection,
     language::{get_language, Language},
     locale::{get_locale, Currency, Locale},
@@ -655,19 +655,31 @@ impl Model {
                         .get_mut(&column)
                         .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
                 }
-                CalcResult::Array(_) => {
-                    *self.workbook.worksheets[sheet as usize]
-                        .sheet_data
-                        .get_mut(&row)
-                        .expect("expected a row")
-                        .get_mut(&column)
-                        .expect("expected a column") = Cell::CellFormulaError {
-                        f,
-                        s,
-                        o: "".to_string(),
-                        m: "Arrays not supported yet".to_string(),
-                        ei: Error::NIMPL,
-                    };
+                CalcResult::Array(array) => {
+                    // Implement implicit intersection - take the first element of the array
+                    if let Some(first_row) = array.first() {
+                        if let Some(first_element) = first_row.first() {
+                            // Convert ArrayNode to CalcResult and recursively call set_cell_value
+                            let calc_result = array_node_to_calc_result(first_element);
+                            self.set_cell_value(cell_reference, &calc_result);
+                        } else {
+                            // Empty row, treat as empty cell
+                            *self.workbook.worksheets[sheet as usize]
+                                .sheet_data
+                                .get_mut(&row)
+                                .expect("expected a row")
+                                .get_mut(&column)
+                                .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                        }
+                    } else {
+                        // Empty array, treat as empty cell
+                        *self.workbook.worksheets[sheet as usize]
+                            .sheet_data
+                            .get_mut(&row)
+                            .expect("expected a row")
+                            .get_mut(&column)
+                            .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                    }
                 }
             }
         }
