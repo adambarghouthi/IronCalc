@@ -780,6 +780,16 @@ impl Model {
                         };
                     }
                 }
+                CalcResult::Array(array) => {
+                    if let Err(error) = process_array(array, cell, |node| {
+                        if let ArrayNode::Number(value) = node {
+                            count += 1.0;
+                            product *= value;
+                        }
+                    }) {
+                        return error;
+                    }
+                }
                 _ => {
                     // Ignore everything else
                 }
