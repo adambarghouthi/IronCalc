@@ -5,6 +5,7 @@ use crate::{
         token::Error,
         types::CellReferenceIndex,
     },
+    functions::util::array_node_to_calc_result,
     model::Model,
 };
 
@@ -118,11 +119,22 @@ impl Model {
                 origin: cell,
                 message: "Arrays not supported yet".to_string(),
             }),
-            CalcResult::Array(_) => Err(CalcResult::Error {
-                error: Error::NIMPL,
-                origin: cell,
-                message: "Arrays not supported yet".to_string(),
-            }),
+            CalcResult::Array(array) => {
+                // Implement implicit intersection - take the first element of the array
+                if let Some(first_row) = array.first() {
+                    if let Some(first_element) = first_row.first() {
+                        // Convert the first ArrayNode to CalcResult and recurse
+                        let first_calc_result = array_node_to_calc_result(first_element);
+                        self.cast_to_number(first_calc_result, cell)
+                    } else {
+                        // Empty row, treat as 0
+                        Ok(0.0)
+                    }
+                } else {
+                    // Empty array, treat as 0
+                    Ok(0.0)
+                }
+            }
         }
     }
 
@@ -175,11 +187,22 @@ impl Model {
                 origin: cell,
                 message: "Arrays not supported yet".to_string(),
             }),
-            CalcResult::Array(_) => Err(CalcResult::Error {
-                error: Error::NIMPL,
-                origin: cell,
-                message: "Arrays not supported yet".to_string(),
-            }),
+            CalcResult::Array(array) => {
+                // Implement implicit intersection - take the first element of the array
+                if let Some(first_row) = array.first() {
+                    if let Some(first_element) = first_row.first() {
+                        // Convert the first ArrayNode to CalcResult and recurse
+                        let first_calc_result = array_node_to_calc_result(first_element);
+                        self.cast_to_string(first_calc_result, cell)
+                    } else {
+                        // Empty row, treat as empty string
+                        Ok("".to_string())
+                    }
+                } else {
+                    // Empty array, treat as empty string
+                    Ok("".to_string())
+                }
+            }
         }
     }
 
@@ -224,11 +247,22 @@ impl Model {
                 origin: cell,
                 message: "Arrays not supported yet".to_string(),
             }),
-            CalcResult::Array(_) => Err(CalcResult::Error {
-                error: Error::NIMPL,
-                origin: cell,
-                message: "Arrays not supported yet".to_string(),
-            }),
+            CalcResult::Array(array) => {
+                // Implement implicit intersection - take the first element of the array
+                if let Some(first_row) = array.first() {
+                    if let Some(first_element) = first_row.first() {
+                        // Convert the first ArrayNode to CalcResult and recurse
+                        let first_calc_result = array_node_to_calc_result(first_element);
+                        self.cast_to_bool(first_calc_result, cell)
+                    } else {
+                        // Empty row, treat as false
+                        Ok(false)
+                    }
+                } else {
+                    // Empty array, treat as false
+                    Ok(false)
+                }
+            }
         }
     }
 
