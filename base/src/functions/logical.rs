@@ -1,10 +1,10 @@
 use crate::{
     calc_result::CalcResult,
-    expressions::{parser::Node, token::Error, types::CellReferenceIndex},
+    expressions::{parser::Node, parser::ArrayNode, token::Error, types::CellReferenceIndex},
     model::Model,
 };
 
-use super::util::compare_values;
+use super::util::{compare_values, process_array};
 
 impl Model {
     pub(crate) fn fn_true(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
@@ -192,11 +192,21 @@ impl Model {
                 }
                 // References to empty cells are ignored. If all args are ignored the result is #VALUE!
                 CalcResult::EmptyCell => {}
-                CalcResult::Array(_) => {
-                    return CalcResult::Error {
-                        error: Error::NIMPL,
-                        origin: cell,
-                        message: "Arrays not supported yet".to_string(),
+                CalcResult::Array(array) => {
+                    // Process each element in the array
+                    if let Err(error) = process_array(array, cell, |node| {
+                        match node {
+                            ArrayNode::Boolean(value) => {
+                                result = Some(fold_fn(result, *value));
+                            }
+                            ArrayNode::Number(value) => {
+                                result = Some(fold_fn(result, *value != 0.0));
+                            }
+                            // Strings and errors are ignored in logical functions
+                            _ => {}
+                        }
+                    }) {
+                        return error;
                     }
                 }
             }
