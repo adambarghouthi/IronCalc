@@ -2,6 +2,7 @@ use crate::{
     calc_result::CalcResult,
     expressions::{parser::Node, token::Error, types::CellReferenceIndex},
     model::{Model, ParsedDefinedName},
+    functions::util::array_node_to_calc_result,
 };
 
 impl Model {
@@ -210,6 +211,50 @@ impl Model {
                     // #EXTERNAL => 19
                 }
             }
+            CalcResult::Array(array) => {
+                // Implement implicit intersection - take the first element
+                if let Some(first_row) = array.first() {
+                    if let Some(first_element) = first_row.first() {
+                        let first_calc_result = array_node_to_calc_result(first_element);
+                        // Check if the first element is an error
+                        match first_calc_result {
+                            CalcResult::Error { error, .. } => {
+                                match error {
+                                    Error::NULL => CalcResult::Number(1.0),
+                                    Error::DIV => CalcResult::Number(2.0),
+                                    Error::VALUE => CalcResult::Number(3.0),
+                                    Error::REF => CalcResult::Number(4.0),
+                                    Error::NAME => CalcResult::Number(5.0),
+                                    Error::NUM => CalcResult::Number(6.0),
+                                    Error::NA => CalcResult::Number(7.0),
+                                    Error::SPILL => CalcResult::Number(9.0),
+                                    Error::CALC => CalcResult::Number(14.0),
+                                    Error::ERROR => CalcResult::Number(101.0),
+                                    Error::NIMPL => CalcResult::Number(102.0),
+                                    Error::CIRC => CalcResult::Number(104.0),
+                                }
+                            }
+                            _ => CalcResult::Error {
+                                error: Error::NA,
+                                origin: cell,
+                                message: "Not an error".to_string(),
+                            },
+                        }
+                    } else {
+                        CalcResult::Error {
+                            error: Error::NA,
+                            origin: cell,
+                            message: "Not an error".to_string(),
+                        }
+                    }
+                } else {
+                    CalcResult::Error {
+                        error: Error::NA,
+                        origin: cell,
+                        message: "Not an error".to_string(),
+                    }
+                }
+            }
             _ => CalcResult::Error {
                 error: Error::NA,
                 origin: cell,
@@ -235,11 +280,27 @@ impl Model {
                 // This cannot happen
                 CalcResult::Number(1.0)
             }
-            CalcResult::Array(_) => CalcResult::Error {
-                error: Error::NIMPL,
-                origin: cell,
-                message: "Arrays not supported yet".to_string(),
-            },
+            CalcResult::Array(array) => {
+                // Implement implicit intersection - take the first element
+                if let Some(first_row) = array.first() {
+                    if let Some(first_element) = first_row.first() {
+                        let first_calc_result = array_node_to_calc_result(first_element);
+                        // Recursively call fn_type with the first element
+                        match first_calc_result {
+                            CalcResult::String(_) => CalcResult::Number(2.0),
+                            CalcResult::Number(_) => CalcResult::Number(1.0),
+                            CalcResult::Boolean(_) => CalcResult::Number(4.0),
+                            CalcResult::Error { .. } => CalcResult::Number(16.0),
+                            CalcResult::EmptyCell => CalcResult::Number(1.0),
+                            _ => CalcResult::Number(1.0), // Default case
+                        }
+                    } else {
+                        CalcResult::Number(1.0) // Empty row
+                    }
+                } else {
+                    CalcResult::Number(1.0) // Empty array
+                }
+            }
         }
     }
     pub(crate) fn fn_sheet(&mut self, args: &[Node], cell: CellReferenceIndex) -> CalcResult {
