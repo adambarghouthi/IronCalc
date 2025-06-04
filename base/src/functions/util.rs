@@ -462,3 +462,18 @@ where F: FnMut(&ArrayNode)
     }
     Ok(())
 }
+
+/// Helper function to convert ArrayNode to CalcResult
+/// This is used throughout the codebase for implicit intersection and array processing
+pub(crate) fn array_node_to_calc_result(node: &ArrayNode) -> CalcResult {
+    match node {
+        ArrayNode::Number(n) => CalcResult::Number(*n),
+        ArrayNode::String(s) => CalcResult::String(s.clone()),
+        ArrayNode::Boolean(b) => CalcResult::Boolean(*b),
+        ArrayNode::Error(e) => CalcResult::Error {
+            error: e.clone(),
+            origin: CellReferenceIndex { sheet: 0, row: 0, column: 0 }, // Dummy origin for array elements
+            message: "Error in array element".to_string(),
+        },
+    }
+}
