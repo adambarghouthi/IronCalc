@@ -83,6 +83,64 @@ pub(crate) enum ParsedDefinedName {
     InvalidDefinedNameFormula,
 }
 
+/// A rectangular range for tracking occupied areas efficiently
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OccupiedRange {
+    /// Starting row (1-indexed)
+    pub start_row: i32,
+    /// Ending row (1-indexed, inclusive)
+    pub end_row: i32,
+    /// Starting column (1-indexed)
+    pub start_col: i32,
+    /// Ending column (1-indexed, inclusive)
+    pub end_col: i32,
+}
+
+/// Spill range information for a dynamic array
+#[derive(Debug, Clone)]
+pub(crate) struct SpillRange {
+    /// The source cell that contains the formula
+    #[allow(dead_code)] // Will be used for advanced spill operations
+    pub source: CellReferenceIndex,
+    /// The range where values are spilled to
+    pub target: OccupiedRange,
+}
+
+/// Tracks all spill ranges for efficient conflict detection and cleanup
+#[derive(Default)]
+pub(crate) struct SpillTracker {
+    /// Maps spilled cell -> source cell (for O(1) conflict lookup)
+    pub ownership: HashMap<(u32, i32, i32), CellReferenceIndex>,
+    
+    /// Maps source cell -> spilled range (for O(1) cleanup lookup)  
+    pub ranges: HashMap<(u32, i32, i32), SpillRange>,
+}
+
+/// Error types for dynamic array operations
+#[derive(Debug, Clone)]
+pub(crate) enum SpillError {
+    /// Spill range conflicts with existing content at the specified cell
+    Conflict(i32, i32),
+    /// Spill range is too large (reserved for future use)
+    #[allow(dead_code)]
+    TooLarge,
+    /// Other spill-related errors (reserved for future use)
+    #[allow(dead_code)]
+    Other(String),
+}
+
+/// Helper enum for cell data during spilling
+enum CellData {
+    /// Numeric value
+    Number(f64),
+    /// String index in shared strings table
+    String(i32),
+    /// Boolean value
+    Boolean(bool),
+    /// Error value
+    Error(Error),
+}
+
 /// A dynamical IronCalc model.
 ///
 /// Its is composed of a `Workbook`. Everything else are dynamical quantities:
@@ -108,6 +166,8 @@ pub struct Model {
     pub(crate) parser: Parser,
     /// The list of cells with formulas that are evaluated of being evaluated
     pub(crate) cells: HashMap<(u32, i32, i32), CellState>,
+    /// Spill tracking for dynamic arrays
+    pub(crate) spill_tracker: SpillTracker,
     /// The locale of the model
     pub(crate) locale: Locale,
     /// Tha language used
@@ -656,29 +716,76 @@ impl Model {
                         .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
                 }
                 CalcResult::Array(array) => {
-                    // Implement implicit intersection - take the first element of the array
-                    if let Some(first_row) = array.first() {
-                        if let Some(first_element) = first_row.first() {
-                            // Convert ArrayNode to CalcResult and recursively call set_cell_value
-                            let calc_result = array_node_to_calc_result(first_element);
-                            self.set_cell_value(cell_reference, &calc_result);
-                        } else {
-                            // Empty row, treat as empty cell
+                    // Dynamic Arrays: Try to spill the array, fallback to implicit intersection on conflict
+                    match self.try_spill_array(cell_reference, array) {
+                        Ok(()) => {
+                            // Spilling succeeded, now store the first element in the source cell
+                            if let Some(first_row) = array.first() {
+                                if let Some(first_element) = first_row.first() {
+                                    let calc_result = array_node_to_calc_result(first_element);
+                                    // Store the first element in the source cell (non-recursive to avoid infinite loop)
+                                    self.store_cell_value_direct(cell_reference, &calc_result, f, s);
+                                } else {
+                                    // Empty row, treat as empty cell
+                                    *self.workbook.worksheets[sheet as usize]
+                                        .sheet_data
+                                        .get_mut(&row)
+                                        .expect("expected a row")
+                                        .get_mut(&column)
+                                        .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                                }
+                            } else {
+                                // Empty array, treat as empty cell
+                                *self.workbook.worksheets[sheet as usize]
+                                    .sheet_data
+                                    .get_mut(&row)
+                                    .expect("expected a row")
+                                    .get_mut(&column)
+                                    .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                            }
+                        }
+                        Err(SpillError::Conflict(conflict_row, conflict_col)) => {
+                            // Spill conflict - store #SPILL! error in source cell
                             *self.workbook.worksheets[sheet as usize]
                                 .sheet_data
                                 .get_mut(&row)
                                 .expect("expected a row")
                                 .get_mut(&column)
-                                .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                                .expect("expected a column") = Cell::CellFormulaError { 
+                                    f, 
+                                    s, 
+                                    ei: Error::SPILL, 
+                                    o: format!("{}!R{}C{}", 
+                                        self.workbook.worksheets[sheet as usize].get_name(),
+                                        conflict_row, 
+                                        conflict_col
+                                    ), 
+                                    m: format!("Spill range blocked by cell at row {}, column {}", conflict_row, conflict_col)
+                                };
                         }
-                    } else {
-                        // Empty array, treat as empty cell
-                        *self.workbook.worksheets[sheet as usize]
-                            .sheet_data
-                            .get_mut(&row)
-                            .expect("expected a row")
-                            .get_mut(&column)
-                            .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                        Err(_other_error) => {
+                            // Other spill errors - fallback to implicit intersection
+                            if let Some(first_row) = array.first() {
+                                if let Some(first_element) = first_row.first() {
+                                    let calc_result = array_node_to_calc_result(first_element);
+                                    self.store_cell_value_direct(cell_reference, &calc_result, f, s);
+                                } else {
+                                    *self.workbook.worksheets[sheet as usize]
+                                        .sheet_data
+                                        .get_mut(&row)
+                                        .expect("expected a row")
+                                        .get_mut(&column)
+                                        .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                                }
+                            } else {
+                                *self.workbook.worksheets[sheet as usize]
+                                    .sheet_data
+                                    .get_mut(&row)
+                                    .expect("expected a row")
+                                    .get_mut(&column)
+                                    .expect("expected a column") = Cell::CellFormulaNumber { f, s, v: 0.0 };
+                            }
+                        }
                     }
                 }
             }
@@ -930,6 +1037,7 @@ impl Model {
             parsed_defined_names: HashMap::new(),
             parser,
             cells,
+            spill_tracker: SpillTracker::default(),
             language,
             locale,
             tz,
@@ -1449,6 +1557,10 @@ impl Model {
         column: i32,
         value: String,
     ) -> Result<(), String> {
+        // Clear any existing spill range from this source cell before setting new content
+        let source_cell = CellReferenceIndex { sheet, row, column };
+        self.clear_spill_range(source_cell);
+        
         // If value starts with "'" then we force the style to be quote_prefix
         let style_index = self.get_cell_style_index(sheet, row, column)?;
         if let Some(new_value) = value.strip_prefix('\'') {
@@ -1801,11 +1913,22 @@ impl Model {
         let cells = self.get_all_cells();
 
         for cell in cells {
-            self.evaluate_cell(CellReferenceIndex {
+            let cell_ref = CellReferenceIndex {
                 sheet: cell.index,
                 row: cell.row,
                 column: cell.column,
-            });
+            };
+            
+            // Only evaluate cells that have actual formulas or content
+            // Don't evaluate cells that are just spilled values from other arrays
+            if let Ok(worksheet) = self.workbook.worksheet(cell.index) {
+                if let Some(actual_cell) = worksheet.cell(cell.row, cell.column) {
+                    // Only evaluate if this cell has a formula (not just spilled content)
+                    if actual_cell.get_formula().is_some() {
+                        self.evaluate_cell(cell_ref);
+                    }
+                }
+            }
         }
     }
 
@@ -1830,6 +1953,10 @@ impl Model {
     /// # }
     /// ```
     pub fn cell_clear_contents(&mut self, sheet: u32, row: i32, column: i32) -> Result<(), String> {
+        // Clear any existing spill range from this source cell before clearing contents
+        let source_cell = CellReferenceIndex { sheet, row, column };
+        self.clear_spill_range(source_cell);
+        
         self.workbook
             .worksheet_mut(sheet)?
             .cell_clear_contents(row, column)?;
@@ -2268,7 +2395,292 @@ impl Model {
 
     /// Deletes the style of a row if there is any
     pub fn delete_row_style(&mut self, sheet: u32, row: i32) -> Result<(), String> {
-        self.workbook.worksheet_mut(sheet)?.delete_row_style(row)
+        let _ = self.workbook.worksheet_mut(sheet)?.delete_row_style(row);
+        Ok(())
+    }
+
+    // ========== Dynamic Array / Spill Methods ==========
+    //
+    // This section implements Excel-compatible dynamic array functionality.
+    // Dynamic arrays automatically "spill" their results into adjacent cells
+    // when a formula returns an array result.
+    //
+    // Core Architecture:
+    // - Arrays are evaluated normally and return CalcResult::Array
+    // - In set_cell_value(), if result is Array, try_spill_array() is called
+    // - Spilling writes array values to target cells and tracks ownership
+    // - Conflict detection prevents spilling into occupied cells
+    // - #SPILL! error is shown when conflicts occur
+    //
+    // Example: A1="={1,2,3}" results in A1=1, B1=2, C1=3
+    //
+    // Key Methods:
+    // - try_spill_array(): Main entry point for spilling
+    // - check_spill_conflicts(): Detects conflicts with existing content
+    // - write_spilled_array_values(): Writes array values to cells
+    // - track_spill_range(): Records spill ownership for cleanup
+    // - clear_spill_range(): Cleans up when formulas change
+    //
+    // References:
+    // - https://support.microsoft.com/en-us/office/dynamic-arrays-and-spilled-array-behavior
+
+    /// Checks if a range conflicts with existing content.
+    /// This method uses both direct cell content checking and our spill tracker
+    /// for comprehensive conflict detection.
+    fn check_spill_conflicts(&self, sheet: u32, target_range: &OccupiedRange) -> Result<(), SpillError> {
+        // Check for conflicts with existing cell content
+        let worksheet = self.workbook.worksheet(sheet).map_err(|e| SpillError::Other(e))?;
+        
+        for row in target_range.start_row..=target_range.end_row {
+            for col in target_range.start_col..=target_range.end_col {
+                // Skip the source cell itself (it's allowed to contain the formula)
+                if row == target_range.start_row && col == target_range.start_col {
+                    continue;
+                }
+                
+                // Check if this cell has meaningful content (not just EmptyCell)
+                if let Some(cell) = worksheet.cell(row, col) {
+                    // Skip EmptyCell as they don't represent real content
+                    if matches!(cell, Cell::EmptyCell { .. }) {
+                        continue;
+                    }
+                    
+                    // Check if this cell is owned by a spill from a DIFFERENT source
+                    let cell_key = (sheet, row, col);
+                    if let Some(spill_owner) = self.spill_tracker.ownership.get(&cell_key) {
+                        // If spilled by a different source, it's a conflict
+                        if spill_owner.row != target_range.start_row || spill_owner.column != target_range.start_col {
+                            return Err(SpillError::Conflict(row, col));
+                        }
+                        // If spilled by the same source (us), it's not a conflict - continue
+                    } else {
+                        // Cell has real content but not from a spill - this is a conflict
+                        return Err(SpillError::Conflict(row, col));
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Calculates the target range for spilling an array
+    fn calculate_spill_range(&self, source: CellReferenceIndex, array: &[Vec<crate::expressions::parser::ArrayNode>]) -> OccupiedRange {
+        let rows = array.len() as i32;
+        let cols = if rows > 0 { array[0].len() as i32 } else { 1 };
+        
+        OccupiedRange {
+            start_row: source.row,
+            end_row: source.row + rows - 1,
+            start_col: source.column,
+            end_col: source.column + cols - 1,
+        }
+    }
+
+    /// Attempts to spill an array from the source cell
+    /// Returns Ok(()) if spilling succeeds, or SpillError if it fails
+    fn try_spill_array(&mut self, source: CellReferenceIndex, array: &[Vec<crate::expressions::parser::ArrayNode>]) -> Result<(), SpillError> {
+        // Calculate target range
+        let target_range = self.calculate_spill_range(source, array);
+        
+        // Clear any existing spill from this source FIRST
+        self.clear_spill_range(source);
+        
+        // Check for conflicts (after clearing our own spill)
+        self.check_spill_conflicts(source.sheet, &target_range)?;
+        
+        // Actually write the array values to cells
+        self.write_spilled_array_values(source, array, &target_range)?;
+        
+        // Track the spill range
+        self.track_spill_range(source, target_range);
+        
+        Ok(())
+    }
+
+    /// Tracks a spill range in our spill tracker
+    fn track_spill_range(&mut self, source: CellReferenceIndex, target_range: OccupiedRange) {
+        let spill_range = SpillRange {
+            source,
+            target: target_range.clone(),
+        };
+        
+        // Track the spill range mapping
+        let source_key = (source.sheet, source.row, source.column);
+        self.spill_tracker.ranges.insert(source_key, spill_range);
+        
+        // Track individual cell ownership
+        for row in target_range.start_row..=target_range.end_row {
+            for col in target_range.start_col..=target_range.end_col {
+                // Don't track the source cell itself
+                if row == source.row && col == source.column {
+                    continue;
+                }
+                let cell_key = (source.sheet, row, col);
+                self.spill_tracker.ownership.insert(cell_key, source);
+            }
+        }
+    }
+
+    /// Clears any existing spill range from a source cell
+    fn clear_spill_range(&mut self, source: CellReferenceIndex) {
+        let source_key = (source.sheet, source.row, source.column);
+        
+        if let Some(spill_range) = self.spill_tracker.ranges.remove(&source_key) {
+            // Clear ownership tracking for all spilled cells
+            for row in spill_range.target.start_row..=spill_range.target.end_row {
+                for col in spill_range.target.start_col..=spill_range.target.end_col {
+                    if row == source.row && col == source.column {
+                        continue; // Skip source cell
+                    }
+                    let cell_key = (source.sheet, row, col);
+                    self.spill_tracker.ownership.remove(&cell_key);
+                    
+                    // Actually clear the cell value
+                    if let Ok(worksheet) = self.workbook.worksheet_mut(source.sheet) {
+                        let _ = worksheet.cell_clear_contents(row, col);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Directly stores a cell value without triggering spill logic (to avoid infinite recursion)
+    fn store_cell_value_direct(&mut self, cell_reference: CellReferenceIndex, result: &CalcResult, formula_index: i32, style: i32) {
+        let CellReferenceIndex { sheet, column, row } = cell_reference;
+        
+        match result {
+            CalcResult::Number(value) => {
+                if value.is_nan() || value.is_infinite() {
+                    *self.workbook.worksheets[sheet as usize]
+                        .sheet_data
+                        .get_mut(&row)
+                        .expect("expected a row")
+                        .get_mut(&column)
+                        .expect("expected a column") = Cell::CellFormulaError { 
+                            f: formula_index, 
+                            s: style, 
+                            ei: Error::NUM, 
+                            o: "".to_string(),
+                            m: "".to_string()
+                        };
+                } else {
+                    *self.workbook.worksheets[sheet as usize]
+                        .sheet_data
+                        .get_mut(&row)
+                        .expect("expected a row")
+                        .get_mut(&column)
+                        .expect("expected a column") = Cell::CellFormulaNumber { f: formula_index, s: style, v: *value };
+                }
+            }
+            CalcResult::String(value) => {
+                *self.workbook.worksheets[sheet as usize]
+                    .sheet_data
+                    .get_mut(&row)
+                    .expect("expected a row")
+                    .get_mut(&column)
+                    .expect("expected a column") = Cell::CellFormulaString { f: formula_index, s: style, v: value.clone() };
+            }
+            CalcResult::Boolean(value) => {
+                *self.workbook.worksheets[sheet as usize]
+                    .sheet_data
+                    .get_mut(&row)
+                    .expect("expected a row")
+                    .get_mut(&column)
+                    .expect("expected a column") = Cell::CellFormulaBoolean { f: formula_index, s: style, v: *value };
+            }
+            CalcResult::Error { error, origin: _, message } => {
+                *self.workbook.worksheets[sheet as usize]
+                    .sheet_data
+                    .get_mut(&row)
+                    .expect("expected a row")
+                    .get_mut(&column)
+                    .expect("expected a column") = Cell::CellFormulaError { 
+                        f: formula_index, 
+                        s: style, 
+                        ei: error.clone(), 
+                        o: "".to_string(),
+                        m: message.clone()
+                    };
+            }
+            _ => {
+                // For other types (Range, EmptyCell, etc.), store as 0
+                *self.workbook.worksheets[sheet as usize]
+                    .sheet_data
+                    .get_mut(&row)
+                    .expect("expected a row")
+                    .get_mut(&column)
+                    .expect("expected a column") = Cell::CellFormulaNumber { f: formula_index, s: style, v: 0.0 };
+            }
+        }
+    }
+
+    /// Writes the actual array values to cells during spilling
+    fn write_spilled_array_values(&mut self, source: CellReferenceIndex, array: &[Vec<crate::expressions::parser::ArrayNode>], target_range: &OccupiedRange) -> Result<(), SpillError> {
+        // Get default style (we'll use style 0 for spilled cells)
+        let default_style = 0;
+        
+        // Pre-process all string values to avoid borrowing conflicts
+        let mut cell_values = Vec::new();
+        for (array_row_idx, array_row) in array.iter().enumerate() {
+            for (array_col_idx, array_node) in array_row.iter().enumerate() {
+                let target_row = target_range.start_row + array_row_idx as i32;
+                let target_col = target_range.start_col + array_col_idx as i32;
+                
+                // Skip the source cell (it will be handled separately)
+                if target_row == source.row && target_col == source.column {
+                    continue;
+                }
+                
+                // Convert ArrayNode to appropriate Cell type and prepare for writing
+                let calc_result = array_node_to_calc_result(array_node);
+                let cell_data = match calc_result {
+                    CalcResult::Number(value) => (target_row, target_col, CellData::Number(value)),
+                    CalcResult::String(value) => {
+                        // Handle shared strings
+                        let string_index = match self.shared_strings.get(&value) {
+                            Some(idx) => *idx as i32,
+                            None => {
+                                let idx = self.workbook.shared_strings.len();
+                                self.workbook.shared_strings.push(value.clone());
+                                self.shared_strings.insert(value.clone(), idx);
+                                idx as i32
+                            }
+                        };
+                        (target_row, target_col, CellData::String(string_index))
+                    }
+                    CalcResult::Boolean(value) => (target_row, target_col, CellData::Boolean(value)),
+                    CalcResult::Error { error, origin: _, message: _ } => (target_row, target_col, CellData::Error(error)),
+                    _ => (target_row, target_col, CellData::Number(0.0)),
+                };
+                cell_values.push(cell_data);
+            }
+        }
+        
+        // Now write all the cell values
+        let worksheet = self.workbook.worksheet_mut(source.sheet).map_err(|e| SpillError::Other(e))?;
+        for (row, col, cell_data) in cell_values {
+            match cell_data {
+                CellData::Number(value) => {
+                    worksheet.set_cell_with_number(row, col, value, default_style)
+                        .map_err(|e| SpillError::Other(e))?;
+                }
+                CellData::String(string_index) => {
+                    worksheet.set_cell_with_string(row, col, string_index, default_style)
+                        .map_err(|e| SpillError::Other(e))?;
+                }
+                CellData::Boolean(value) => {
+                    worksheet.set_cell_with_boolean(row, col, value, default_style)
+                        .map_err(|e| SpillError::Other(e))?;
+                }
+                CellData::Error(error) => {
+                    worksheet.set_cell_with_error(row, col, error, default_style)
+                        .map_err(|e| SpillError::Other(e))?;
+                }
+            }
+        }
+        
+        Ok(())
     }
 }
 
