@@ -15,7 +15,7 @@ use crate::{
     },
     language::get_language,
     locale::get_locale,
-    model::{get_milliseconds_since_epoch, Model, ParsedDefinedName},
+    model::{get_milliseconds_since_epoch, Model, ParsedDefinedName, SpillTracker},
     types::{
         DefinedName, Metadata, SheetState, Workbook, WorkbookSettings, WorkbookView, Worksheet,
         WorksheetView,
@@ -423,6 +423,7 @@ impl Model {
             parsed_defined_names: HashMap::new(),
             parser,
             cells,
+            spill_tracker: SpillTracker::default(),
             locale,
             language,
             tz,
