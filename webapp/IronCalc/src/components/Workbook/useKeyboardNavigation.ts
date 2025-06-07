@@ -150,8 +150,8 @@ const useKeyboardNavigation = (
         event.preventDefault();
         return;
       }
-      if (isEditingKey(key) || key === "Backspace") {
-        const initText = key === "Backspace" ? "" : key;
+      if (isEditingKey(key)) {
+        const initText = key;
         options.onEditKeyPressStart(initText);
         event.stopPropagation();
         event.preventDefault();
@@ -206,7 +206,8 @@ const useKeyboardNavigation = (
 
           break;
         }
-        case "Delete": {
+        case "Delete":
+        case "Backspace": {
           options.onCellsDeleted();
 
           break;
